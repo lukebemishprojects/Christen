@@ -1,0 +1,59 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow'
+}
+
+group = 'dev.lukebemish'
+version = '0.1.0'
+
+dependencies {
+    implementation 'net.neoforged.jst:jst-cli:1.0.63'
+    implementation 'net.neoforged.jst:jst-api:1.0.63'
+    implementation 'net.neoforged:srgutils:1.0.9'
+    implementation 'org.ow2.asm:asm:9.7'
+    implementation 'org.slf4j:slf4j-simple:2.0.13'
+
+    compileOnly 'org.jetbrains:annotations:24.1.0'
+    compileOnly 'org.jspecify:jspecify:1.0.0'
+    compileOnly 'com.google.auto.service:auto-service:1.1.1'
+
+    annotationProcessor 'com.google.auto.service:auto-service:1.1.1'
+
+    testImplementation platform('org.junit:junit-bom:5.10.3')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+    toolchain.languageVersion.set JavaLanguageVersion.of(21)
+}
+
+configurations {
+    shadow
+    shadow.extendsFrom(runtimeClasspath)
+}
+
+shadowJar {
+    configurations = [project.configurations.shadow]
+    mergeServiceFiles()
+    manifest {
+        attributes 'Main-Class': 'net.neoforged.jst.cli.Main'
+    }
+}
+
+assemble.configure {
+    dependsOn shadowJar
+}
+
+test {
+    useJUnitPlatform()
+
+    testLogging {
+        showStandardStreams = true
+        exceptionFormat = 'full'
+        showCauses = true
+        showStackTraces = true
+        events 'passed', 'skipped', 'failed'
+    }
+}
