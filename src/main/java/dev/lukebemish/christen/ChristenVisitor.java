@@ -111,7 +111,11 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         remapTypeAtReference(reference);
                     }
                     case null -> {}
-                    default -> {}
+                    default -> {
+                        for (var type : reference.getTypeParameters()) {
+                            visitType(type);
+                        }
+                    }
                 }
                 return;
             }
