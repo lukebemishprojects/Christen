@@ -1,15 +1,20 @@
 package dev.lukebemish.christen;
 
 import com.intellij.lang.jvm.JvmModifier;
+import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiArrayType;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiImportStatementBase;
 import com.intellij.psi.PsiImportStaticStatement;
+import com.intellij.psi.PsiJavaCodeReferenceElement;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiPackage;
 import com.intellij.psi.PsiRecursiveElementVisitor;
-import com.intellij.psi.PsiTypeElement;
+import com.intellij.psi.PsiReferenceExpression;
+import com.intellij.psi.PsiType;
+import com.intellij.psi.impl.source.PsiClassReferenceType;
 import net.neoforged.jst.api.PsiHelper;
 import net.neoforged.jst.api.Replacement;
 import net.neoforged.jst.api.Replacements;
@@ -58,106 +63,217 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
 
     @Override
     public void visitElement(@NotNull PsiElement element) {
-        if (element instanceof PsiImportStatementBase importStatement) {
-            handleImport(importStatement);
-            return;
-        } else if (element instanceof PsiTypeElement typeElement) {
-            var reference = typeElement.getInnermostComponentReferenceElement();
-            // TODO: WTH is going on here...
+        switch (element) {
+            case PsiImportStatementBase importStatement -> {
+                handleImport(importStatement);
+                return;
+            }
+            case PsiJavaCodeReferenceElement reference -> {
+                // Need to double check this but in theory any of these left should be field accesses
+                var resolved = reference.resolve();
+                for (var type : reference.getTypeParameters()) {
+                    visitType(type);
+                }
+                if (reference instanceof PsiReferenceExpression expression) {
+                    if (expression.getQualifierExpression() != null) {
+                        visitElement(expression.getQualifierExpression());
+                    }
+                }
+                switch (resolved) {
+                    case PsiField field -> {
+                        var fieldName = reference.getReferenceName();
+                        var remappedName = remapField(field, mappings, field.getContainingClass());
+                        if (remappedName != null) {
+                            replacements.add(new Replacement(reference.getReferenceNameElement().getTextRange(), remappedName));
+                            var originalReference = new MemberReference(field.getContainingClass().getQualifiedName(), fieldName);
+                            var starImport = remappedStaticStarImportFields.get(originalReference);
+                            if (starImport != null) {
+                                starImport.handle(replacements);
+                            }
+                        }
+                    }
+                    case PsiMethod method -> {
+                        var methodName = reference.getReferenceName();
+                        var remappedName = remapMethod(method, mappings, method.getContainingClass());
+                        if (remappedName != null) {
+                            replacements.add(new Replacement(reference.getReferenceNameElement().getTextRange(), remappedName));
+                            var originalReference = new MemberReference(method.getContainingClass().getQualifiedName(), methodName);
+                            var starImport = remappedStaticStarImportMethods.get(originalReference);
+                            if (starImport != null) {
+                                starImport.handle(replacements);
+                            }
+                        }
+                    }
+                    case PsiClass ignored -> {
+                        remapTypeAtReference(reference);
+                    }
+                    case null -> {}
+                    default -> {}
+                }
+                return;
+            }
+            default -> {
+
+            }
         }
         super.visitElement(element);
     }
 
-    private void handleImport(PsiImportStatementBase importStatement) {
-        var reference = importStatement.resolve();
-        if (reference instanceof PsiClass psiClass) {
-            var importPath = psiClass.getQualifiedName();
-            if (importPath != null) {
-                var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
-                if (!remapped.equals(importPath)) {
-                    replacements.add(new Replacement(importStatement.getTextRange(), "import "+remapped+";"));
-                    remappedImports.put(importPath, remapped);
+    private void visitType(PsiType type) {
+        switch (type) {
+            case PsiClassReferenceType classType -> {
+                if (remapTypeAtReference(classType.getReference())) return;
+                for (var parameter : classType.getParameters()) {
+                    visitType(parameter);
                 }
             }
-        } else if (reference instanceof PsiPackage psiPackage) {
-            for (var psiClass : psiPackage.getClasses()) {
+            case PsiArrayType arrayType -> visitType(arrayType.getComponentType());
+            default -> {}
+        }
+    }
+
+    private boolean remapTypeAtReference(PsiJavaCodeReferenceElement classReference) {
+        var psiClass = JavaPsiFacade.getInstance(classReference.getProject()).findClass(
+                classReference.getQualifiedName(),
+                classReference.getResolveScope()
+        );
+        return remapTypeAtReference(classReference.getReferenceNameElement(), psiClass);
+    }
+
+    private boolean remapTypeAtReference(PsiElement referenceNameElement, PsiClass psiClass) {
+        if (psiClass != null) {
+            var workingClass = psiClass;
+            var suffix = "";
+            while (workingClass != null) {
+                var originalClass = workingClass.getQualifiedName();
+                if (checkImportForPrefix(referenceNameElement, originalClass, suffix)) return true;
+                var remappedName = formatAsBefore(mappings.remapClass(binaryName(workingClass)), workingClass);
+                var lastPiece = remappedName.substring(remappedName.lastIndexOf('.')+1);
+                suffix = suffix + "." + lastPiece;
+                workingClass = psiClass.getContainingClass();
+            }
+            var remappedClass = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
+            replacements.add(new Replacement(referenceNameElement.getTextRange(), remappedClass));
+        }
+        return false;
+    }
+
+    private boolean checkImportForPrefix(PsiElement referenceNameElement, String originalClass, String suffix) {
+        var remappedImport = remappedImports.get(originalClass);
+        if (remappedImport != null) {
+            var simpleName = remappedImport.substring(remappedImport.lastIndexOf('.')+1);
+            replacements.add(new Replacement(referenceNameElement.getTextRange(), simpleName+suffix));
+            return true;
+        }
+        var remappedStarImport = remappedStarImports.get(originalClass);
+        if (remappedStarImport != null) {
+            var simpleName = remappedStarImport.remappedName().substring(remappedStarImport.remappedName().lastIndexOf('.')+1);
+            replacements.add(new Replacement(referenceNameElement.getTextRange(), simpleName+suffix));
+            remappedStarImport.handle(replacements);
+            return true;
+        }
+        return false;
+    }
+
+    private void handleImport(PsiImportStatementBase importStatement) {
+        var reference = importStatement.resolve();
+        switch (reference) {
+            case PsiClass psiClass -> {
                 var importPath = psiClass.getQualifiedName();
                 if (importPath != null) {
                     var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
                     if (!remapped.equals(importPath)) {
-                        remappedStarImports.put(importPath, new StarImportData(new boolean[0], importStatement, remapped));
-                        replacements.add(new Replacement(importStatement.getTextRange(), ""));
+                        replacements.add(new Replacement(importStatement.getTextRange(), "import "+remapped+";"));
+                        remappedImports.put(importPath, remapped);
                     }
                 }
             }
-        } else if (reference instanceof PsiField psiField) {
-            var containingClass = psiField.getContainingClass();
-            if (containingClass != null) {
-                var originalClass = containingClass.getQualifiedName();
-                if (originalClass != null) {
-                    var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
-                    var newFieldName = remapField(psiField, mappings, containingClass);
-                    if (newFieldName != null || !remappedClass.equals(originalClass)) {
-                        var oldMemberReference = new MemberReference(originalClass, psiField.getName());
-                        var newMemberReference = new MemberReference(remappedClass, newFieldName != null ? newFieldName : psiField.getName());
-                        remappedStaticImportFields.put(oldMemberReference, newMemberReference);
-                        replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
-                    }
-                }
-            }
-        } else if (reference instanceof PsiMethod psiMethod) {
-            var containingClass = psiMethod.getContainingClass();
-            if (containingClass != null) {
-                var originalClass = containingClass.getQualifiedName();
-                if (originalClass != null) {
-                    var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
-                    var newMethodName = remapMethod(psiMethod, mappings, containingClass);
-                    if (newMethodName != null || !remappedClass.equals(originalClass)) {
-                        var oldMemberReference = new MemberReference(originalClass, psiMethod.getName());
-                        var newMemberReference = new MemberReference(remappedClass, newMethodName != null ? newMethodName : psiMethod.getName());
-                        remappedStaticImportMethods.put(oldMemberReference, newMemberReference);
-                        replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
-                    }
-                }
-            }
-        } else if (importStatement instanceof PsiImportStaticStatement psiImportStaticStatement && importStatement.isOnDemand()) {
-            var targetClass = psiImportStaticStatement.resolveTargetClass();
-            if (targetClass != null) {
-                var originalClass = targetClass.getQualifiedName();
-                if (originalClass != null) {
-                    var remappedClass = formatAsBefore(mappings.remapClass(binaryName(targetClass)), targetClass);
-                    for (var method : targetClass.getAllMethods()) {
-                        if (!method.hasModifier(JvmModifier.STATIC)) {
-                            continue;
+            case PsiPackage psiPackage -> {
+                for (var psiClass : psiPackage.getClasses()) {
+                    var importPath = psiClass.getQualifiedName();
+                    if (importPath != null) {
+                        var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
+                        if (!remapped.equals(importPath)) {
+                            remappedStarImports.put(importPath, new StarImportData(new boolean[0], importStatement, remapped));
+                            replacements.add(new Replacement(importStatement.getTextRange(), ""));
                         }
-                        var newMethodName = remapMethod(method, mappings, targetClass);
+                    }
+                }
+            }
+            case PsiField psiField -> {
+                var containingClass = psiField.getContainingClass();
+                if (containingClass != null) {
+                    var originalClass = containingClass.getQualifiedName();
+                    if (originalClass != null) {
+                        var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
+                        var newFieldName = remapField(psiField, mappings, containingClass);
+                        if (newFieldName != null || !remappedClass.equals(originalClass)) {
+                            var oldMemberReference = new MemberReference(originalClass, psiField.getName());
+                            var newMemberReference = new MemberReference(remappedClass, newFieldName != null ? newFieldName : psiField.getName());
+                            remappedStaticImportFields.put(oldMemberReference, newMemberReference);
+                            replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
+                        }
+                    }
+                }
+            }
+            case PsiMethod psiMethod -> {
+                var containingClass = psiMethod.getContainingClass();
+                if (containingClass != null) {
+                    var originalClass = containingClass.getQualifiedName();
+                    if (originalClass != null) {
+                        var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
+                        var newMethodName = remapMethod(psiMethod, mappings, containingClass);
                         if (newMethodName != null || !remappedClass.equals(originalClass)) {
-                            var oldMemberReference = new MemberReference(originalClass, method.getName());
-                            var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : method.getName());
-                            remappedStaticStarImportMethods.put(oldMemberReference, newMemberReference);
+                            var oldMemberReference = new MemberReference(originalClass, psiMethod.getName());
+                            var newMemberReference = new MemberReference(remappedClass, newMethodName != null ? newMethodName : psiMethod.getName());
+                            remappedStaticImportMethods.put(oldMemberReference, newMemberReference);
+                            replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
                         }
                     }
-                    for (var field : targetClass.getAllFields()) {
-                        if (!field.hasModifier(JvmModifier.STATIC)) {
-                            continue;
-                        }
-                        var newMethodName = remapField(field, mappings, targetClass);
-                        if (newMethodName != null || !remappedClass.equals(originalClass)) {
-                            var oldMemberReference = new MemberReference(originalClass, field.getName());
-                            var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : field.getName());
-                            remappedStaticStarImportFields.put(oldMemberReference, newMemberReference);
-                        }
-                    }
-                    for (var inner : targetClass.getAllInnerClasses()) {
-                        var qualifiedName = inner.getQualifiedName();
-                        if (qualifiedName != null) {
-                            var remappedInnerClass = formatAsBefore(mappings.remapClass(binaryName(inner)), inner);
-                            if (!remappedInnerClass.equals(qualifiedName)) {
-                                remappedStarImports.put(qualifiedName, new StarImportData(new boolean[0], psiImportStaticStatement, remappedInnerClass));
+                }
+            }
+            case null -> {}
+            default -> {
+                if (importStatement instanceof PsiImportStaticStatement psiImportStaticStatement && importStatement.isOnDemand()) {
+                    var targetClass = psiImportStaticStatement.resolveTargetClass();
+                    if (targetClass != null) {
+                        var originalClass = targetClass.getQualifiedName();
+                        if (originalClass != null) {
+                            var remappedClass = formatAsBefore(mappings.remapClass(binaryName(targetClass)), targetClass);
+                            for (var method : targetClass.getAllMethods()) {
+                                if (!method.hasModifier(JvmModifier.STATIC)) {
+                                    continue;
+                                }
+                                var newMethodName = remapMethod(method, mappings, targetClass);
+                                if (newMethodName != null || !remappedClass.equals(originalClass)) {
+                                    var oldMemberReference = new MemberReference(originalClass, method.getName());
+                                    var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : method.getName());
+                                    remappedStaticStarImportMethods.put(oldMemberReference, newMemberReference);
+                                }
                             }
+                            for (var field : targetClass.getAllFields()) {
+                                if (!field.hasModifier(JvmModifier.STATIC)) {
+                                    continue;
+                                }
+                                var newMethodName = remapField(field, mappings, targetClass);
+                                if (newMethodName != null || !remappedClass.equals(originalClass)) {
+                                    var oldMemberReference = new MemberReference(originalClass, field.getName());
+                                    var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : field.getName());
+                                    remappedStaticStarImportFields.put(oldMemberReference, newMemberReference);
+                                }
+                            }
+                            for (var inner : targetClass.getAllInnerClasses()) {
+                                var qualifiedName = inner.getQualifiedName();
+                                if (qualifiedName != null) {
+                                    var remappedInnerClass = formatAsBefore(mappings.remapClass(binaryName(inner)), inner);
+                                    if (!remappedInnerClass.equals(qualifiedName)) {
+                                        remappedStarImports.put(qualifiedName, new StarImportData(new boolean[0], psiImportStaticStatement, remappedInnerClass));
+                                    }
+                                }
+                            }
+                            replacements.add(new Replacement(importStatement.getTextRange(), ""));
                         }
                     }
-                    replacements.add(new Replacement(importStatement.getTextRange(), ""));
                 }
             }
         }
