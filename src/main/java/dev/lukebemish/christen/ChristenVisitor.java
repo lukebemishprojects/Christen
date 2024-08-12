@@ -30,8 +30,6 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
     private final Replacements replacements;
 
     private final Map<String, String> remappedImports = new HashMap<>();
-    private final Map<MemberReference, MemberReference> remappedStaticImportFields = new HashMap<>();
-    private final Map<MemberReference, MemberReference> remappedStaticImportMethods = new HashMap<>();
     private final Map<MemberReference, StarReferenceImportData> remappedStaticStarImportFields = new HashMap<>();
     private final Map<MemberReference, StarReferenceImportData> remappedStaticStarImportMethods = new HashMap<>();
     private final Map<String, StarImportData> remappedStarImports = new HashMap<>();
@@ -43,7 +41,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                 return;
             }
             handled[0] = true;
-            replacements.insertBefore(statement, "import "+remappedName+";");
+            replacements.insertAfter(statement, "import "+remappedName+";");
         }
     }
     private record StarReferenceImportData(boolean[] handled, PsiImportStaticStatement statement, String remappedOwner, String remappedName) {
@@ -52,7 +50,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                 return;
             }
             handled[0] = true;
-            replacements.insertBefore(statement, "import static "+remappedOwner+"."+remappedName+";");
+            replacements.insertAfter(statement, "import static "+remappedOwner+"."+remappedName+";");
         }
     }
 
@@ -178,7 +176,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
     private void handleImport(PsiImportStatementBase importStatement) {
         var reference = importStatement.resolve();
         switch (reference) {
-            case PsiClass psiClass -> {
+            case PsiClass psiClass when !(importStatement instanceof PsiImportStaticStatement) -> {
                 var importPath = psiClass.getQualifiedName();
                 if (importPath != null) {
                     var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
@@ -194,7 +192,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                     if (importPath != null) {
                         var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
                         if (!remapped.equals(importPath)) {
-                            remappedStarImports.put(importPath, new StarImportData(new boolean[0], importStatement, remapped));
+                            remappedStarImports.put(importPath, new StarImportData(new boolean[1], importStatement, remapped));
                             replacements.add(new Replacement(importStatement.getTextRange(), ""));
                         }
                     }
@@ -208,9 +206,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
                         var newFieldName = remapField(psiField, mappings, containingClass);
                         if (newFieldName != null || !remappedClass.equals(originalClass)) {
-                            var oldMemberReference = new MemberReference(originalClass, psiField.getName());
                             var newMemberReference = new MemberReference(remappedClass, newFieldName != null ? newFieldName : psiField.getName());
-                            remappedStaticImportFields.put(oldMemberReference, newMemberReference);
                             replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
                         }
                     }
@@ -224,9 +220,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         var remappedClass = formatAsBefore(mappings.remapClass(binaryName(containingClass)), containingClass);
                         var newMethodName = remapMethod(psiMethod, mappings, containingClass);
                         if (newMethodName != null || !remappedClass.equals(originalClass)) {
-                            var oldMemberReference = new MemberReference(originalClass, psiMethod.getName());
                             var newMemberReference = new MemberReference(remappedClass, newMethodName != null ? newMethodName : psiMethod.getName());
-                            remappedStaticImportMethods.put(oldMemberReference, newMemberReference);
                             replacements.add(new Replacement(importStatement.getTextRange(), "import static "+newMemberReference.owner+"."+newMemberReference.name+";"));
                         }
                     }
@@ -247,7 +241,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                                 var newMethodName = remapMethod(method, mappings, targetClass);
                                 if (newMethodName != null || !remappedClass.equals(originalClass)) {
                                     var oldMemberReference = new MemberReference(originalClass, method.getName());
-                                    var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : method.getName());
+                                    var newMemberReference = new StarReferenceImportData(new boolean[1], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : method.getName());
                                     remappedStaticStarImportMethods.put(oldMemberReference, newMemberReference);
                                 }
                             }
@@ -258,7 +252,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                                 var newMethodName = remapField(field, mappings, targetClass);
                                 if (newMethodName != null || !remappedClass.equals(originalClass)) {
                                     var oldMemberReference = new MemberReference(originalClass, field.getName());
-                                    var newMemberReference = new StarReferenceImportData(new boolean[0], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : field.getName());
+                                    var newMemberReference = new StarReferenceImportData(new boolean[1], psiImportStaticStatement, remappedClass, newMethodName != null ? newMethodName : field.getName());
                                     remappedStaticStarImportFields.put(oldMemberReference, newMemberReference);
                                 }
                             }
@@ -267,7 +261,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                                 if (qualifiedName != null) {
                                     var remappedInnerClass = formatAsBefore(mappings.remapClass(binaryName(inner)), inner);
                                     if (!remappedInnerClass.equals(qualifiedName)) {
-                                        remappedStarImports.put(qualifiedName, new StarImportData(new boolean[0], psiImportStaticStatement, remappedInnerClass));
+                                        remappedStarImports.put(qualifiedName, new StarImportData(new boolean[1], psiImportStaticStatement, remappedInnerClass));
                                     }
                                 }
                             }
