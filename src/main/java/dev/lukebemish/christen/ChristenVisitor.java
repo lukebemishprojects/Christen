@@ -2,8 +2,7 @@ package dev.lukebemish.christen;
 
 import com.google.common.collect.Sets;
 import com.intellij.lang.jvm.JvmModifier;
-import com.intellij.psi.JavaPsiFacade;
-import com.intellij.psi.PsiArrayType;
+import com.intellij.openapi.util.TextRange;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiField;
@@ -13,9 +12,6 @@ import com.intellij.psi.PsiJavaCodeReferenceElement;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiPackage;
 import com.intellij.psi.PsiRecursiveElementVisitor;
-import com.intellij.psi.PsiReferenceExpression;
-import com.intellij.psi.PsiType;
-import com.intellij.psi.impl.source.PsiClassReferenceType;
 import net.neoforged.jst.api.PsiHelper;
 import net.neoforged.jst.api.Replacement;
 import net.neoforged.jst.api.Replacements;
@@ -24,7 +20,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jspecify.annotations.Nullable;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -71,16 +66,16 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
             }
             case PsiJavaCodeReferenceElement reference -> {
                 var resolved = reference.resolve();
-                if (reference instanceof PsiReferenceExpression expression) {
-                    if (expression.getQualifierExpression() != null) {
-                        visitElement(expression.getQualifierExpression());
+                if (reference.getQualifier() instanceof PsiElement qualifier) {
+                    visitElement(qualifier);
+                }
+                if (reference.getParameterList() != null) {
+                    for (var type : reference.getParameterList().getTypeParameterElements()) {
+                        visitElement(type);
                     }
                 }
                 switch (resolved) {
                     case PsiField field -> {
-                        for (var type : reference.getTypeParameters()) {
-                            visitType(type);
-                        }
                         var fieldName = reference.getReferenceName();
                         var remappedName = remapField(field, mappings, field.getContainingClass());
                         if (remappedName != null && !remappedName.equals(fieldName)) {
@@ -93,9 +88,6 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         }
                     }
                     case PsiMethod method -> {
-                        for (var type : reference.getTypeParameters()) {
-                            visitType(type);
-                        }
                         var methodName = reference.getReferenceName();
                         var remappedName = remapMethod(method, mappings, method.getContainingClass());
                         if (remappedName != null && !remappedName.equals(methodName)) {
@@ -107,15 +99,11 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                             }
                         }
                     }
-                    case PsiClass ignored -> {
-                        remapTypeAtReference(reference);
+                    case PsiClass psiClass -> {
+                        remapTypeAtReference(reference, psiClass);
                     }
                     case null -> {}
-                    default -> {
-                        for (var type : reference.getTypeParameters()) {
-                            visitType(type);
-                        }
-                    }
+                    default -> {}
                 }
                 return;
             }
@@ -126,60 +114,46 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
         super.visitElement(element);
     }
 
-    private void visitType(PsiType type) {
-        switch (type) {
-            case PsiClassReferenceType classType -> {
-                if (remapTypeAtReference(classType.getReference())) return;
-                for (var parameter : classType.getParameters()) {
-                    visitType(parameter);
-                }
-            }
-            case PsiArrayType arrayType -> visitType(arrayType.getComponentType());
-            default -> {}
+    private boolean remapTypeAtReference(PsiJavaCodeReferenceElement classReference, PsiClass psiClass) {
+        var qualifier = classReference.getQualifier();
+        if (qualifier instanceof PsiJavaCodeReferenceElement referenceElement && referenceElement.resolve() instanceof PsiClass qualifierClass) {
+            // qualifier has already been remapped
+            var remappedName = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
+            var lastPiece = remappedName.substring(remappedName.lastIndexOf('.')+1);
+            replacements.add(new Replacement(classReference.getReferenceNameElement().getTextRange(), lastPiece));
+            return true;
         }
-    }
-
-    private boolean remapTypeAtReference(PsiJavaCodeReferenceElement classReference) {
-        var psiClass = JavaPsiFacade.getInstance(classReference.getProject()).findClass(
-                classReference.getQualifiedName(),
-                classReference.getResolveScope()
-        );
-        return remapTypeAtReference(classReference.getReferenceNameElement(), psiClass);
-    }
-
-    private boolean remapTypeAtReference(PsiElement referenceNameElement, PsiClass psiClass) {
         if (psiClass != null) {
-            var workingClass = psiClass;
-            var suffix = "";
-            while (workingClass != null) {
-                var originalClass = workingClass.getQualifiedName();
-                if (checkImportForPrefix(referenceNameElement, originalClass, suffix)) return true;
-                var remappedName = formatAsBefore(mappings.remapClass(binaryName(workingClass)), workingClass);
-                var lastPiece = remappedName.substring(remappedName.lastIndexOf('.')+1);
-                suffix = "." + lastPiece + suffix;
-                workingClass = workingClass.getContainingClass();
-            }
+            var originalClass = psiClass.getQualifiedName();
+            if (checkImportForPrefix(classReference, originalClass)) return true;
             if (mappings.getClass(binaryName(psiClass)) == null) {
                 return false;
             }
             var remappedClass = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
-            replacements.add(new Replacement(referenceNameElement.getTextRange(), remappedClass));
+            int start;
+            int end = classReference.getReferenceNameElement().getTextRange().getEndOffset();
+            if (classReference.getQualifier() != null) {
+                start = classReference.getQualifier().getTextRange().getStartOffset();
+            } else {
+                start = classReference.getTextRange().getStartOffset();
+            }
+            replacements.add(new Replacement(new TextRange(start, end), remappedClass));
             return true;
         }
         return false;
     }
 
-    private boolean checkImportForPrefix(PsiElement referenceNameElement, String originalClass, String suffix) {
+    private boolean checkImportForPrefix(PsiJavaCodeReferenceElement referenceElement, String originalClass) {
         var remappedImport = remappedImports.get(originalClass);
         if (remappedImport != null) {
             var simpleName = remappedImport.substring(remappedImport.lastIndexOf('.')+1);
-            replacements.add(new Replacement(referenceNameElement.getTextRange(), simpleName+suffix));
+            replacements.add(new Replacement(referenceElement.getReferenceNameElement().getTextRange(), simpleName));
             return true;
         }
         var remappedStarImport = remappedStarImports.get(originalClass);
         if (remappedStarImport != null) {
             var simpleName = remappedStarImport.remappedName().substring(remappedStarImport.remappedName().lastIndexOf('.')+1);
-            replacements.add(new Replacement(referenceNameElement.getTextRange(), simpleName+suffix));
+            replacements.add(new Replacement(referenceElement.getReferenceNameElement().getTextRange(), simpleName));
             remappedStarImport.handle(replacements);
             return true;
         }
