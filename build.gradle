@@ -56,7 +56,7 @@ managedVersioning {
                 gradlew 'Publish', 'publish', 'closeAndReleaseSonatypeStagingRepository'
                 sign()
                 mavenCentral()
-                mavenStaging('release')
+                mavenStaging('github')
             }
         }
         build_pr {

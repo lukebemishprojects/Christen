@@ -145,7 +145,7 @@
                         "SONATYPE_PASSWORD": "${{ secrets.SONATYPE_PASSWORD }}",
                         "SONATYPE_USER": "${{ secrets.SONATYPE_USER }}",
                         "STAGING_MAVEN_PASSWORD": "${{ secrets.STAGING_MAVEN_PASSWORD }}",
-                        "STAGING_MAVEN_USER": "release",
+                        "STAGING_MAVEN_USER": "github",
                         "STAGING_MAVEN_URL": "https://maven.lukebemish.dev/staging/"
                     }
                 }
