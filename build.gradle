@@ -1,10 +1,87 @@
 plugins {
-    id 'java'
+    id 'java-library'
+    id 'maven-publish'
+    id 'signing'
     id 'com.github.johnrengelman.shadow'
+    id 'dev.lukebemish.managedversioning'
 }
 
 group = 'dev.lukebemish'
-version = '0.1.0'
+
+managedVersioning {
+    versionFile.set project.file('version.properties')
+    versionPRs()
+    versionSnapshots()
+
+    gitHubActions {
+        snapshot {
+            prettyName.set 'Snapshot'
+            workflowDispatch.set(true)
+            onBranches.add 'main'
+            gradleJob {
+                buildCache()
+                cacheReadOnly.set false
+                javaVersion.set '21'
+                name.set 'build'
+                gradlew 'Build', 'build'
+                gradlew 'Publish', 'publish'
+                mavenSnapshot('github')
+            }
+        }
+        release {
+            prettyName.set 'Release'
+            workflowDispatch.set(true)
+            gradleJob {
+                buildCache()
+                javaVersion.set '21'
+                name.set 'build'
+                step {
+                    setupGitUser()
+                }
+                readOnly.set false
+                gradlew 'Tag Release', 'tagRelease'
+                gradlew 'Build', 'build'
+                step {
+                    run.set 'git push && git push --tags'
+                }
+                recordVersion 'Record Version', 'version'
+                dependencySubmission()
+            }
+            gradleJob {
+                buildCache()
+                javaVersion.set '21'
+                name.set 'publish'
+                needs.add('build')
+                tag.set('${{needs.build.outputs.version}}')
+                gradlew 'Publish', 'publish', 'closeAndReleaseSonatypeStagingRepository'
+                sign()
+                mavenCentral()
+                mavenStaging('release')
+            }
+        }
+        build_pr {
+            prettyName.set 'Build PR'
+            pullRequest.set(true)
+            gradleJob {
+                javaVersion.set '21'
+                name.set 'build'
+                gradlew 'Build', 'build'
+                gradlew 'Publish', 'publish'
+                pullRequestArtifact()
+            }
+        }
+        publish_pr {
+            prettyName.set 'Publish PR'
+            publishPullRequestAction(
+                    'github',
+                    "${project.group.replace('.', '/')}/${project.name}",
+                    'Build PR'
+            )
+        }
+    }
+
+    apply()
+}
 
 dependencies {
     implementation 'net.neoforged.jst:jst-cli:1.0.63'
@@ -57,3 +134,23 @@ test {
         events 'passed', 'skipped', 'failed'
     }
 }
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            managedVersioning.publishing.sign(signing, it)
+            managedVersioning.publishing.pom(it, 'Christen', 'LGPL-3.0-or-later')
+            pom {
+                name = 'Christen'
+                description = 'A tool for remapping java source code'
+            }
+
+            from components.java
+        }
+    }
+}
+
+managedVersioning.publishing.mavenStaging(publishing)
+managedVersioning.publishing.mavenCentral()
+managedVersioning.publishing.mavenPullRequest(publishing)
+managedVersioning.publishing.mavenSnapshot(publishing)
