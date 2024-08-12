@@ -139,8 +139,8 @@ class ImportTests {
                 """
                         package abc;
                         
-                        import ghi.Remapped;
-                        import static ghi.Remapped.remappedStaticMethod;import ghi.Remapped.RemappedInner;import static ghi.Remapped.REMAPPED_STATIC_FIELD;
+                        import def.*;import ghi.Remapped;
+                        import static def.ToRemap.*;import static ghi.Remapped.remappedStaticMethod;import ghi.Remapped.RemappedInner;import static ghi.Remapped.REMAPPED_STATIC_FIELD;
                         
                         public class TestClass {
                             public void method() {

@@ -1,5 +1,6 @@
 package dev.lukebemish.christen;
 
+import com.google.common.collect.Sets;
 import com.intellij.lang.jvm.JvmModifier;
 import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.PsiArrayType;
@@ -23,7 +24,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jspecify.annotations.Nullable;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 class ChristenVisitor extends PsiRecursiveElementVisitor {
     private final IMappingFile mappings;
@@ -67,11 +70,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                 return;
             }
             case PsiJavaCodeReferenceElement reference -> {
-                // Need to double check this but in theory any of these left should be field accesses
                 var resolved = reference.resolve();
-                for (var type : reference.getTypeParameters()) {
-                    visitType(type);
-                }
                 if (reference instanceof PsiReferenceExpression expression) {
                     if (expression.getQualifierExpression() != null) {
                         visitElement(expression.getQualifierExpression());
@@ -79,9 +78,12 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                 }
                 switch (resolved) {
                     case PsiField field -> {
+                        for (var type : reference.getTypeParameters()) {
+                            visitType(type);
+                        }
                         var fieldName = reference.getReferenceName();
                         var remappedName = remapField(field, mappings, field.getContainingClass());
-                        if (remappedName != null) {
+                        if (remappedName != null && !remappedName.equals(fieldName)) {
                             replacements.add(new Replacement(reference.getReferenceNameElement().getTextRange(), remappedName));
                             var originalReference = new MemberReference(field.getContainingClass().getQualifiedName(), fieldName);
                             var starImport = remappedStaticStarImportFields.get(originalReference);
@@ -91,9 +93,12 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         }
                     }
                     case PsiMethod method -> {
+                        for (var type : reference.getTypeParameters()) {
+                            visitType(type);
+                        }
                         var methodName = reference.getReferenceName();
                         var remappedName = remapMethod(method, mappings, method.getContainingClass());
-                        if (remappedName != null) {
+                        if (remappedName != null && !remappedName.equals(methodName)) {
                             replacements.add(new Replacement(reference.getReferenceNameElement().getTextRange(), remappedName));
                             var originalReference = new MemberReference(method.getContainingClass().getQualifiedName(), methodName);
                             var starImport = remappedStaticStarImportMethods.get(originalReference);
@@ -147,11 +152,15 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                 if (checkImportForPrefix(referenceNameElement, originalClass, suffix)) return true;
                 var remappedName = formatAsBefore(mappings.remapClass(binaryName(workingClass)), workingClass);
                 var lastPiece = remappedName.substring(remappedName.lastIndexOf('.')+1);
-                suffix = suffix + "." + lastPiece;
-                workingClass = psiClass.getContainingClass();
+                suffix = "." + lastPiece + suffix;
+                workingClass = workingClass.getContainingClass();
+            }
+            if (mappings.getClass(binaryName(psiClass)) == null) {
+                return false;
             }
             var remappedClass = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
             replacements.add(new Replacement(referenceNameElement.getTextRange(), remappedClass));
+            return true;
         }
         return false;
     }
@@ -193,7 +202,6 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                         var remapped = formatAsBefore(mappings.remapClass(binaryName(psiClass)), psiClass);
                         if (!remapped.equals(importPath)) {
                             remappedStarImports.put(importPath, new StarImportData(new boolean[1], importStatement, remapped));
-                            replacements.add(new Replacement(importStatement.getTextRange(), ""));
                         }
                     }
                 }
@@ -265,7 +273,6 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                                     }
                                 }
                             }
-                            replacements.add(new Replacement(importStatement.getTextRange(), ""));
                         }
                     }
                 }
@@ -281,7 +288,12 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
         return name.replace('/', '.');
     }
 
-    private static @Nullable String remapField(PsiField psiField, IMappingFile mappings, PsiClass originalClass) {
+    private final Set<String> notMappedClasses = Sets.newConcurrentHashSet();
+
+    private @Nullable String remapField(PsiField psiField, IMappingFile mappings, PsiClass originalClass) {
+        if (notMappedClasses.contains(binaryName(originalClass))) {
+            return null;
+        }
         var clazz = mappings.getClass(binaryName(originalClass));
         if (clazz == null) {
             for (var type : originalClass.getSupers()) {
@@ -296,6 +308,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                     }
                 }
             }
+            notMappedClasses.add(binaryName(originalClass));
             return null;
         }
         if (clazz.getField(psiField.getName()) == null) {
@@ -304,7 +317,10 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
         return clazz.remapField(psiField.getName());
     }
 
-    private static @Nullable String remapMethod(PsiMethod psiMethod, IMappingFile mappings, PsiClass originalClass) {
+    private @Nullable String remapMethod(PsiMethod psiMethod, IMappingFile mappings, PsiClass originalClass) {
+        if (notMappedClasses.contains(binaryName(originalClass))) {
+            return null;
+        }
         var clazz = mappings.getClass(binaryName(originalClass));
         if (clazz == null) {
             for (var type : originalClass.getSupers()) {
@@ -319,6 +335,7 @@ class ChristenVisitor extends PsiRecursiveElementVisitor {
                     }
                 }
             }
+            notMappedClasses.add(binaryName(originalClass));
             return null;
         }
         var desc = PsiHelper.getBinaryMethodSignature(psiMethod);
