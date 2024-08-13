@@ -107,12 +107,12 @@ java {
 }
 
 configurations {
-    shadow
-    shadow.extendsFrom(runtimeClasspath)
+    include
+    include.extendsFrom(runtimeClasspath)
 }
 
 shadowJar {
-    configurations = [project.configurations.shadow]
+    configurations = [project.configurations.include]
     mergeServiceFiles()
     manifest {
         attributes 'Main-Class': 'net.neoforged.jst.cli.Main'
