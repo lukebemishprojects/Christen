@@ -22,7 +22,7 @@ public class ChristenMain implements Callable<Integer> {
 
     static {
         try {
-            ENABLED_TRANSFORMERS = MethodHandles.lookup().findGetter(Main.class, "enabledTransformers", HashSet.class);
+            ENABLED_TRANSFORMERS = MethodHandles.privateLookupIn(Main.class, MethodHandles.lookup()).findGetter(Main.class, "enabledTransformers", HashSet.class);
         } catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);
         }
