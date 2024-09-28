@@ -83,18 +83,26 @@ managedVersioning {
     apply()
 }
 
+sourceSets {
+    cli {}
+}
+
 dependencies {
+    cliImplementation 'net.neoforged.jst:jst-cli:1.0.63'
+    cliImplementation 'net.neoforged.jst:jst-api:1.0.63'
+    cliCompileOnly sourceSets.main.output
+
+    cliCompileOnly cLibs.bundles.compileonly
+    cliAnnotationProcessor cLibs.bundles.annotationprocessor
+
     implementation 'net.neoforged.jst:jst-cli:1.0.63'
     implementation 'net.neoforged.jst:jst-api:1.0.63'
     implementation 'net.neoforged:srgutils:1.0.9'
     implementation 'org.ow2.asm:asm:9.7'
     implementation 'org.slf4j:slf4j-simple:2.0.13'
 
-    compileOnly 'org.jetbrains:annotations:24.1.0'
-    compileOnly 'org.jspecify:jspecify:1.0.0'
-    compileOnly 'com.google.auto.service:auto-service:1.1.1'
-
-    annotationProcessor 'com.google.auto.service:auto-service:1.1.1'
+    compileOnly cLibs.bundles.compileonly
+    annotationProcessor cLibs.bundles.annotationprocessor
 
     testImplementation platform('org.junit:junit-bom:5.10.3')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -112,10 +120,11 @@ configurations {
 }
 
 shadowJar {
+    from sourceSets.cli.output
     configurations = [project.configurations.include]
     mergeServiceFiles()
     manifest {
-        attributes 'Main-Class': 'net.neoforged.jst.cli.Main'
+        attributes 'Main-Class': 'dev.lukebemish.christen.cli.ChristenMain'
     }
 }
 
