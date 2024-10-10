@@ -83,6 +83,8 @@ managedVersioning {
     apply()
 }
 
+println "Version: ${project.version}"
+
 dependencies {
     implementation 'net.neoforged.jst:jst-cli:1.0.63'
     implementation 'net.neoforged.jst:jst-api:1.0.63'
@@ -109,10 +111,9 @@ configurations {
 }
 
 shadowJar {
-    configurations = [project.configurations.include]
     mergeServiceFiles()
     manifest {
-        attributes 'Main-Class': 'net.neoforged.jst.cli.ChristenMain'
+        attributes 'Main-Class': 'net.neoforged.jst.cli.Main'
     }
 }
 
